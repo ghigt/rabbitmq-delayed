@@ -1,0 +1,15 @@
+version: '2'
+
+services:
+  # RabbitMQ
+  rabbit:
+    container_name: rabbitmq
+    hostname: rabbit
+    image: rabbit-test
+    environment:
+      - RABBITMQ_DEFAULT_USER = guest
+      - RABBITMQ_DEFAULT_PASS = guest
+      - RABBITMQ_DEFAULT_VHOST = pages_importer
+    ports:
+      - "5672:5672"
+      - "15672:15672"

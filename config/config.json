@@ -1,0 +1,7 @@
+{
+  "app-name": "rabbitmq",
+  "app-version": "0.0.0",
+  "amqp": {
+    "url": "amqp://guest:guest@localhost:5672"
+  }
+}
