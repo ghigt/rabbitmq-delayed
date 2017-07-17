@@ -23,9 +23,12 @@ func run() {
 	}
 	defer rmq.Shutdown()
 
-	err = rmq.Publish([]byte("hello"))
+	err = rmq.PublishWithDelay("user.event.publish", []byte("hello"), 10000)
 	if err != nil {
 		log.Fatalf("run: failed to publish into rabbitmq: %v", err)
+	}
+
+	for {
 	}
 }
 

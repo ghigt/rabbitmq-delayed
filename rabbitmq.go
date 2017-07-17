@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/apex/log"
+	"github.com/pkg/errors"
 	"github.com/streadway/amqp"
 )
 
@@ -11,6 +12,7 @@ import (
 // it also handles disconnection (purpose of URL and QueueName storage)
 type RabbitMQ struct {
 	URL        string
+	Exchange   string
 	Conn       *amqp.Connection
 	Chann      *amqp.Channel
 	Queue      amqp.Queue
@@ -20,7 +22,8 @@ type RabbitMQ struct {
 
 func initRabbitMQ(config AMQP) (*RabbitMQ, error) {
 	rmq := &RabbitMQ{
-		URL: config.URL,
+		URL:      config.URL,
+		Exchange: config.Exchange,
 	}
 
 	err := rmq.load()
@@ -48,17 +51,91 @@ func (rmq *RabbitMQ) load() error {
 		return err
 	}
 
+	log.Info("connection to rabbitMQ established")
+
 	rmq.closeChann = make(chan *amqp.Error)
 	rmq.Conn.NotifyClose(rmq.closeChann)
 
-	rmq.Queue, err = rmq.Chann.QueueDeclare("lci.content.create", true, false, false, false, nil)
+	// declare exchange if not exist
+	err = rmq.Chann.ExchangeDeclare(rmq.Exchange, "direct", true, false, false, false, nil)
+	if err != nil {
+		return errors.Wrapf(err, "declaring exchange %q", rmq.Exchange)
+	}
+
+	args := make(amqp.Table)
+	args["x-delayed-type"] = "direct"
+	err = rmq.Chann.ExchangeDeclare("delayed", "x-delayed-message", true, false, false, false, args)
+	if err != nil {
+		return errors.Wrapf(err, "declaring exchange %q", "delayed")
+	}
+
+	err = declareConsumer(rmq)
 	if err != nil {
 		return err
 	}
 
-	log.Info("connection to rabbitMQ established")
+	return nil
+}
+
+// declareConsumer declares all queues and bindings for the consumer
+func declareConsumer(rmq *RabbitMQ) error {
+	var err error
+
+	// rmq.Queue, err = rmq.Chann.QueueDeclare("user-created-queue", true, false, false, false, nil)
+	// if err != nil {
+	// 	return err
+	// }
+	// err = rmq.Chann.QueueBind(rmq.Queue.Name, "user.event.create", rmq.Exchange, false, nil)
+	// if err != nil {
+	// 	return err
+	// }
+
+	delayedQueue, err := rmq.Chann.QueueDeclare("user-published-queue", true, false, false, false, nil)
+	if err != nil {
+		return err
+	}
+	err = rmq.Chann.QueueBind(delayedQueue.Name, "user.event.publish", "delayed", false, nil)
+	if err != nil {
+		return err
+	}
+
+	// Set our quality of service.  Since we're sharing 3 consumers on the same
+	// channel, we want at least 2 messages in flight.
+	err = rmq.Chann.Qos(2, 0, false)
+	if err != nil {
+		return err
+	}
+
+	published, err := rmq.Chann.Consume(
+		"user-published-queue",
+		"user-published-consumer",
+		false,
+		false,
+		false,
+		false,
+		nil)
+	if err != nil {
+		return err
+	}
+
+	go consume(published)
 
 	return nil
+}
+
+func consume(ds <-chan amqp.Delivery) {
+	for {
+		log.Debug("start listenning to consume")
+
+		select {
+		case d, ok := <-ds:
+			if !ok {
+				return
+			}
+			log.Infof("consume %s", string(d.Body))
+			d.Ack(false)
+		}
+	}
 }
 
 // Shutdown closes rabbitmq's connection
@@ -70,6 +147,7 @@ func (rmq *RabbitMQ) Shutdown() {
 	<-rmq.quitChann
 }
 
+// handleDisconnect handle a disconnection trying to reconnect every 5 seconds
 func (rmq *RabbitMQ) handleDisconnect() {
 	for {
 		select {
@@ -94,15 +172,30 @@ func (rmq *RabbitMQ) handleDisconnect() {
 	}
 }
 
-// Publish sends the given body to the channel
-func (rmq *RabbitMQ) Publish(body []byte) error {
+// Publish sends the given body on the routingKey to the channel
+func (rmq *RabbitMQ) Publish(routingKey string, body []byte) error {
+	return rmq.publish(rmq.Exchange, routingKey, body, 0)
+}
 
-	log.Debugf("publishing to %q %q", rmq.Queue.Name, body)
+// PublishWithDelay sends the given body on the routingKey to the channel with a delay
+func (rmq *RabbitMQ) PublishWithDelay(routingKey string, body []byte, delay int64) error {
+	return rmq.publish("delayed", routingKey, body, delay)
+}
 
-	return rmq.Chann.Publish("", rmq.Queue.Name, false, false, amqp.Publishing{
+func (rmq *RabbitMQ) publish(exchange string, routingKey string, body []byte, delay int64) error {
+	headers := make(amqp.Table)
+
+	log.Debugf("publishing to %q %q", routingKey, body)
+
+	if delay != 0 {
+		headers["x-delay"] = delay
+	}
+
+	return rmq.Chann.Publish(exchange, routingKey, false, false, amqp.Publishing{
 		DeliveryMode: amqp.Persistent,
 		Timestamp:    time.Now(),
 		ContentType:  "application/json",
 		Body:         body,
+		Headers:      headers,
 	})
 }

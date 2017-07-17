@@ -2,7 +2,8 @@ package main
 
 // AMQP is the amqp configuration
 type AMQP struct {
-	URL string `default:"amqp://guest:guest@127.0.0.1:5672/guest"`
+	URL      string `default:"amqp://guest:guest@127.0.0.1:5672/guest"`
+	Exchange string `default:"amq.direct"`
 }
 
 // Config is the application configuration
